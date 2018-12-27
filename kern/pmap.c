@@ -376,7 +376,33 @@ pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
 	// Fill this function in
-	return NULL;
+	pde_t *pde = NULL;
+	pte_t *pgtable = NULL;
+	
+	struct PageInfo *pp;
+ 
+	pde = &pgdir[PDX(va)];
+	if(*pde & PTE_P)
+	{
+		pgtable = (KADDR(PTE_ADDR(*pde)));
+	}
+	else
+	{
+		if(!create ||
+		   !(pp = page_alloc(ALLOC_ZERO)) ||
+		   !(pgtable = (pte_t*)page2kva(pp)))
+		{
+			return NULL;
+		}
+ 
+		pp->pp_ref++;
+		*pde = PADDR(pgtable) | PTE_P |PTE_W | PTE_U;
+	}
+ 
+	return &pgtable[PTX(va)];
+ 
+
+
 }
 
 //
@@ -393,7 +419,30 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
-	// Fill this function in
+	// Fill this function in 
+	uintptr_t  va_next = va;
+	physaddr_t pa_next = pa;
+	pte_t *    pte = NULL;//page table entrance
+ 
+	ROUNDUP(size,PGSIZE);//page align
+ 
+	assert(size%PGSIZE == 0 || cprintf("size:%x \n",size));
+ 
+	int temp = 0;
+	for(temp = 0;temp < size/PGSIZE;temp++)
+	{
+		pte = pgdir_walk(pgdir,(void*)va_next,1);
+ 
+		if(!pte)
+		{
+			return;
+		}
+		
+		*pte = PTE_ADDR(pa_next) | perm | PTE_P;
+		pa_next += PGSIZE;
+		va_next += PGSIZE;
+	}
+
 }
 
 //
@@ -425,7 +474,35 @@ int
 page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 {
 	// Fill this function in
+
+ 
+	pte_t* pte = pgdir_walk(pgdir,va,0);
+	physaddr_t ppa = page2pa(pp);
+ 
+	if(pte)
+	{
+		if(*pte & PTE_P)
+		{
+			page_remove(pgdir,va);
+		}
+		if(page_free_list == pp)
+		{
+			page_free_list = page_free_list->pp_link;
+		}
+	}
+	else
+	{
+		pte = pgdir_walk(pgdir,va,1);
+		if(!pte)
+		{
+			return -E_NO_MEM;
+		}	
+	}
+	*pte = page2pa(pp) | PTE_P | perm;
+	pp->pp_ref++;
+	tlb_invalidate(pgdir,va);
 	return 0;
+
 }
 
 //
@@ -443,7 +520,18 @@ struct PageInfo *
 page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 {
 	// Fill this function in
-	return NULL;
+
+	pte_t* pte = pgdir_walk(pgdir,va,0);
+ 
+	if(!pte)
+	{
+		return NULL;
+	}
+ 
+	*pte_store = pte;
+ 
+	return pa2page(PTE_ADDR(*pte));
+
 }
 
 //
@@ -464,9 +552,25 @@ page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 void
 page_remove(pde_t *pgdir, void *va)
 {
-	// Fill this function in
-}
+	// Fill this function 
 
+	pte_t*  pte = pgdir_walk(pgdir,va,0);
+	pte_t** pte_store = &pte;
+	struct PageInfo* pp = page_lookup(pgdir,va,pte_store);
+ 
+	if(!pp)
+	{
+		return ;
+	}
+ 
+	page_decref(pp);
+	**pte_store = 0; 
+	tlb_invalidate(pgdir,va);
+	
+
+
+
+}
 //
 // Invalidate a TLB entry, but only if the page tables being
 // edited are the ones currently in use by the processor.
